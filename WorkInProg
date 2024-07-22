@@ -1,0 +1,97 @@
+## 
+## Author: MLB
+
+# Step 1: Packages #####
+
+
+# Step 2: Load files in #####
+## Set wd =====
+
+setwd("C:/Users/mlb72/OneDrive/Documents/Rice/Lab/R for students/Rocky_Ren_Summer2024/RR_16_8_Gated")
+
+## Load files #####
+
+myfiles <- list.files(path="C:/Users/mlb72/OneDrive/Documents/Rice/Lab/R for students/Rocky_Ren_Summer2024/RR_16_8_Gated", # your wd
+                      pattern = ".fcs", # file pattern to look for 
+                      ignore.case = TRUE) # I have no idea lol
+
+fs <- read.flowSet(myfiles[1:66], # telling how many files at once to load- here, the first 10. These files are HUGE- may help to do in chunks
+                   path="C:/Users/mlb72/OneDrive/Documents/Rice/Lab/R for students/Rocky_Ren_Summer2024/RR_16_8_Gated", # wd 
+                   alter.names=TRUE) # no idea 
+
+# Step 3: Extract counts #####
+
+# Inspect parameter descriptions for the first flowFrame
+parameter_desc <- pData(parameters(fs[[1]]))$desc
+parameter_names <- pData(parameters(fs[[1]]))$name
+
+# Combine descriptions with names for better inspection
+param_info <- data.frame(Name = parameter_names, Description = parameter_desc)
+print(param_info)
+
+# Assuming you've found the corresponding name for "B-525-40-A" in the desc
+desc_of_interest <- "B-525-40-A"
+
+# Find the name corresponding to the description
+name_of_interest <- parameter_names[parameter_desc == desc_of_interest]
+
+# Check if the name was found
+if (length(name_of_interest) == 0) {
+  stop("Description not found in the parameter list.")
+} else {
+  cat("Mapped parameter description to name:", name_of_interest, "\n")
+}
+
+# Initialize a list to store histogram data
+histogram_list <- list()
+
+# Loop over each flowFrame in the flowSet
+for (i in seq_along(fs)) {
+  # Extract data for the mapped parameter name
+  frame_data <- exprs(fs[[i]])[, name_of_interest]
+  
+  # Generate a histogram without plotting
+
+#
+  hist_data <- hist(frame_data, breaks = 500, plot = FALSE)
+  
+  # Store histogram data in the list
+  histogram_list[[i]] <- data.frame(mid = hist_data$mids, counts = hist_data$counts)
+}
+
+
+# Step 4: Check #####
+
+# Visualize the histogram for the first flowFrame
+ggplot(histogram_list[[1]], aes(x = mid, y = counts)) +
+  geom_bar(stat = "identity", width = diff(hist_data$breaks)[1]) +
+  labs(title = paste("Histogram of", desc_of_interest, "(Frame 1)"), x = desc_of_interest, y = "Count")+
+  coord_cartesian(xlim = c(0, 2.5e6))+
+  theme_minimal()
+
+# check with OG file
+ggcyto(fs[[1]], aes(x = `B-525-40-A`))+
+  geom_histogram(bins = 500)+
+  coord_cartesian(xlim = c(0, 2.5e6))+
+  theme_minimal()
+
+# Step 5: Transform data #####
+
+for (i in seq_along(histogram_list)) {
+  histogram_list[[i]]$mid_log <- log(histogram_list[[i]]$mid)
+}
+
+# Step 6: Normalize data #####
+
+## Normalize peaks =====
+
+normalized_histogram_list <- list()
+
+
+
+
+
+
+
+
+
