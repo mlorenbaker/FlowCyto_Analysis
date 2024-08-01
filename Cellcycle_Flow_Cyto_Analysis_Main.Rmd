@@ -1,0 +1,1050 @@
+---
+title: "Data_for_RR"
+author: "MLB"
+date: "2024-07-22"
+output: html_document
+---
+
+# Packages
+
+```{r}
+# Install 
+## Run 1x !!!
+
+# install.packages("flowCore")
+# install.packages("flowWorkspace")
+# install.packages("openCyto")
+# install.packages("flowAI")
+# install.packages("gridExtra")
+# install.packages("tidyverse)
+```
+
+```{r}
+
+library(flowCore)
+library(flowWorkspace)
+library(openCyto)
+library(ggcyto)
+library(flowAI)
+library(gridExtra)
+library(tidyverse)
+library(ggplot2)
+```
+
+# Load files
+
+I started with only loading 10 files into the flowset (fs), even though 66 were linked to myfiles
+
+```{r}
+
+setwd("C:/Users/mlb72/OneDrive/Documents/RR")
+
+
+# Load files #####
+
+myfiles <- list.files(path="C:/Users/mlb72/OneDrive/Documents/RR/RR_R816", # your wd
+                      pattern = ".fcs", # file pattern to look for 
+                      ignore.case = TRUE) # I have no idea lol
+
+fs <- read.flowSet(myfiles[1:12], # telling how many files at once to load- here, the first 10. These files are HUGE- may help to do in chunks
+                   path="C:/Users/mlb72/OneDrive/Documents/RR/RR_R816", # wd 
+                   alter.names=TRUE) # no idea 
+```
+
+# Extract counts
+
+Here I have to define the parameter we want- B-525-40-A. It's not a main descriptor, so I had to locate the descriptor it is attached to and link them. The final result is being able to use B525-40-A.
+
+I then create a histogram for each file without actually plotting the histogram. I then extract the data into a histogram_list[[i]]. Each file's data is stored in this list.
+
+B-525-40-A is stored as "mid", and counts is stored as "counts"
+
+```{r}
+# Extract counts #####
+
+# Inspect parameter descriptions for the first flowFrame
+parameter_desc <- pData(parameters(fs[[1]]))$desc
+parameter_names <- pData(parameters(fs[[1]]))$name
+
+# Combine descriptions with names for better inspection
+param_info <- data.frame(Name = parameter_names, Description = parameter_desc)
+print(param_info)
+
+# Assuming you've found the corresponding name for "B-525-40-A" in the desc
+desc_of_interest <- "B-525-40-A"
+
+# Find the name corresponding to the description
+name_of_interest <- parameter_names[parameter_desc == desc_of_interest]
+
+# Check if the name was found
+if (length(name_of_interest) == 0) {
+  stop("Description not found in the parameter list.")
+} else {
+  cat("Mapped parameter description to name:", name_of_interest, "\n")
+}
+
+# Initialize a list to store histogram data
+histogram_list <- list()
+
+# Loop over each flowFrame in the flowSet
+for (i in seq_along(fs)) {
+  # Attempt to get the file path for the current flowFrame
+  full_file_path <- keyword(fs[[i]], "FILENAME")[[1]]
+  
+  # Print the full_file_path to verify its content
+  print(full_file_path)
+  
+  # Check if the full_file_path is a character vector
+  if (is.character(full_file_path) && length(full_file_path) > 0) {
+    # Extract only the file name using basename
+    file_name <- basename(full_file_path)
+  } else {
+    # Handle cases where full_file_path is not valid
+    warning(paste("Invalid file path for flowFrame", i, ":", full_file_path))
+    file_name <- NA  # Assign NA or some default value
+  }
+  
+  # Print the file name
+  cat("Processing file:", file_name, "\n")
+  
+  # Extract data for the mapped parameter name
+  frame_data <- exprs(fs[[i]])[, name_of_interest]
+  
+  # Generate a histogram without plotting
+  hist_data <- hist(frame_data, breaks = 500, plot = FALSE)
+  
+  # Create a data frame for histogram data
+  hist_df <- data.frame(
+    mid = hist_data$mids, 
+    counts = hist_data$counts
+  )
+  
+  # Add the file name as a single entry (not repeated for each row)
+  hist_df$file_name <- file_name[1]
+  
+  # Store histogram data in the list
+  histogram_list[[i]] <- hist_df
+}
+
+```
+
+## Check
+
+Check the plot you can build from a file in the histogram_list against an original fs file histogram. It may not be perfect.
+
+```{r}
+# Visualize #####
+
+ggplot(histogram_list[[4]], aes(mid, counts))+
+  # geom_bar(stat = "identity", width = diff(hist_data$breaks)[1])+
+  geom_bar(stat = "identity")+
+  labs(title = paste(histogram_list[[1]]$file_name[[1]]))+
+  theme_minimal()+
+  coord_cartesian(xlim = c(0, 2.5e6))
+
+
+# check with OG file
+ggcyto(fs[[4]], aes(x = `B-525-40-A`))+
+  geom_histogram(bins = 500)+
+  coord_cartesian(xlim = c(0, 2.5e6))+
+  theme_minimal()
+
+```
+
+## Transform
+
+Transform the x, "mid", to log scale
+
+```{r}
+# Log scale #####
+
+for (i in seq_along(histogram_list)) {
+  histogram_list[[i]]$mid_log <- log(histogram_list[[i]]$mid)
+}
+```
+
+# Normalize
+
+### To peak height
+
+During the washing steps of the staining protocol, we loose some cells. For this code, we decided to normalize to the max peak to account for this. .
+
+```{r}
+
+# Initialize a list to store normalized histogram data for each flowFrame
+normalized_histogram_list <- list()
+
+# Normalize each histogram using the extracted histogram data
+for (i in seq_along(histogram_list)) {
+  # Get the histogram data frame
+  hist_df <- histogram_list[[i]]
+  
+  # Normalize counts to the highest peak
+  hist_df$normalized_counts <- hist_df$counts / max(hist_df$counts)
+  
+  # Store the normalized histogram data in the list
+  normalized_histogram_list[[i]] <- hist_df
+}
+
+
+```
+
+## X axis normalize
+
+```{r}
+# Function to adjust x-axis so the peak is at x = 10
+adjust_x_axis_for_peak <- function(histogram_data) {
+  # Find the x-value (mid_log) where the normalized_counts is max
+  peak_x <- histogram_data$mid_log[which.max(histogram_data$normalized_counts)]
+  
+  # Calculate the shift needed to move the peak to x = 10
+  shift <- 10 - peak_x
+  
+  # Apply the shift to mid_log values
+  histogram_data$mid_log_adjusted <- histogram_data$mid_log + shift
+  
+  return(histogram_data)
+}
+# Apply the adjustment to each histogram in the list
+adjusted_histogram_list <- lapply(normalized_histogram_list, adjust_x_axis_for_peak)
+
+# Optional: Plotting to verify the results
+plot_adjusted_histograms <- function(histogram_data_list) {
+  # Combine all histograms into one data frame for plotting
+  combined_data <- do.call(rbind, lapply(seq_along(histogram_data_list), function(i) {
+    df <- histogram_data_list[[i]]
+    df$histogram_id <- i
+    return(df)
+  }))
+  
+  ggplot(combined_data, aes(x = mid_log_adjusted, y = normalized_counts, color = as.factor(histogram_id))) +
+    geom_line() +
+    theme_minimal() +
+    labs(title = "Adjusted Normalized Histograms",
+         x = "Adjusted Log Transformed X-axis",
+         y = "Normalized Frequency",
+         color = "Histogram ID")
+}# Plot the adjusted histograms
+plot_adjusted_histograms(adjusted_histogram_list)
+```
+
+Our final list is adjusted_histogram_list[[i]] \#################
+
+# Density Curve for nice plots
+
+### Step 1: Cut data
+
+I decided to trim the data to get rid of the outliers to the left of the peaks.
+
+```{r}
+
+min <- 9.5
+max <- 11
+
+hist_cut <- list()
+
+for (i in seq_along(adjusted_histogram_list)) {
+  df <- adjusted_histogram_list[[i]]
+  
+  hist_cut[[i]] <- adjusted_histogram_list[[i]] %>%
+    filter(mid_log_adjusted >= min, mid_log_adjusted <= max)
+}
+
+plots <- function(hist_cut) {
+  # Combine all histograms into one data frame for plotting
+  combined_data <- do.call(rbind, lapply(seq_along(hist_cut), function(i) {
+    df <- hist_cut[[i]]
+    df$histogram_id <- i
+    return(df)
+  }))
+  
+  ggplot(combined_data, aes(x = mid_log_adjusted, y = normalized_counts, color = as.factor(histogram_id))) +
+    geom_line() +
+    theme_minimal() +
+    labs(title = "Adjusted Normalized Histograms",
+         x = "Adjusted Log Transformed X-axis",
+         y = "Normalized Frequency",
+         color = "Histogram ID")
+}# Plot the adjusted histograms
+plot_adjusted_histograms(hist_cut)
+```
+
+## Step 2: Calculate density
+
+Data stored in 'density_list[[i]]'
+
+```{r}
+# Initialize a list to store density data for each flowFrame
+density_list <- list()
+
+# Loop through each normalized histogram to calculate density
+for (i in seq_along(hist_cut)) {
+  # Extract histogram data for the current flowFrame
+  hist_df <- hist_cut[[i]]
+  filename <- hist_cut[[i]]$file_name[1]
+  
+  # Compute the density using the midpoints weighted by the normalized counts
+  density_data <- density(rep(hist_df$mid_log_adjusted, times = round(hist_df$normalized_counts * 1000)),  # Weighting mids by normalized counts
+                          kernel = "gaussian",  # Optional: specify the kernel type
+                          bw = "nrd0")  # Optional: bandwidth selection
+  
+  # Create a data frame for density data
+  density_df <- data.frame(
+    x = density_data$x,
+    y = density_data$y / max(density_data$y),
+    file_name = filename# Normalize the density to match histogram normalization
+  )
+  
+  # Add the filename to the density_df
+  # Assuming filename is consistent within each adjusted_histogram_list entry
+  # density_df$file_name <- unique(hist_df$FILENAME)
+  
+  # Store the density data in the list
+  density_list[[i]] <- density_df
+}
+
+```
+
+## Check
+
+```{r}
+
+ggplot(hist_cut[[1]], aes(x = mid_log_adjusted, y = normalized_counts))+
+  geom_bar(stat = "identity", fill = "white", alpha = 0)+
+  geom_line(data = density_list[[1]], aes(x = x, y = y), col = "black", size =1)+
+  theme_classic()+
+  coord_cartesian(xlim = c(9, 12))+
+  labs(x = "B-525-40-A", y = "Counts", title = density_list[[1]]$file_name)+
+  theme(text = element_text(family = "serif"))
+
+
+```
+
+## Plot all
+
+```{r}
+# Initialize a list to store ggplot objects
+plot_list <- list()
+
+# Loop through each normalized histogram and create a plot with density curve
+for (i in seq_along(hist_cut)) {
+  # Extract histogram and density data for the current flowFrame
+  hist_df <- hist_cut[[i]]
+  density_df <- density_list[[i]]
+  file_name <- hist_cut[[i]]$FILENAME
+  
+  # Create a ggplot object for the current histogram with density curve
+  p <- ggplot(hist_df, aes(x = mid_log_adjusted, y = normalized_counts)) +
+    geom_bar(stat = "identity", width = diff(hist_df$mid_log_adjusted)[1], fill = "white", alpha = 0) +
+    geom_line(data = density_df, aes(x = x, y = y), color = "black", size = 1) +
+    labs(x = desc_of_interest, y = "Normalized Frequency") +
+    theme_classic() +
+    theme(text = element_text(family = "serif")) +
+    # theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5))+
+    coord_cartesian(xlim = c(9.5, 11))
+    
+  
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+
+# Print all plots
+plot_list
+```
+
+```{r}
+# Initialize a list to store ggplot objects
+plot_list <- list()
+
+# Loop through each normalized histogram and create a plot with density curve
+for (i in seq_along(hist_cut)) {
+  # Extract histogram and density data for the current flowFrame
+  hist_df <- hist_cut[[i]]
+  density_df <- density_list[[i]]
+  file_name <- hist_df$FILENAME[1]  # Extract the file name from the first row
+  
+  # Create a ggplot object for the current histogram with density curve
+  p <- ggplot(hist_df, aes(x = mid_log_adjusted, y = normalized_counts)) +
+    geom_bar(stat = "identity", width = diff(hist_df$mid_log_adjusted)[1], fill = "white", alpha = 0) +
+    geom_line(data = density_df, aes(x = x, y = y), color = "black", size = 1) +
+    labs(x = desc_of_interest, y = "Normalized Frequency", title = file_name) +
+    theme_classic() +
+    theme(text = element_text(family = "serif")) +
+    # theme(panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5))+
+    coord_cartesian(xlim = c(9, 12))
+    
+  # Add the plot to the list
+  plot_list[[i]] <- p
+}
+
+# Print all plots
+plot_list
+
+```
+
+## Export
+
+```{r}
+
+output <- "C:/Users/mlb72/OneDrive/Documents/Rice/Lab/R for students/Rocky_Ren_Summer2024/RR_extra_plots/"
+#
+
+
+
+for (i in seq_along(plot_list)) {
+  plot_name <- paste0("plot_", i, plot_list[[i]]$data$file_name[1], ".png")
+  ggsave(filename = file.path(output, plot_name), plot = plot_list[[i]])
+}
+
+
+```
+
+# Fitting
+
+Here I split the peaks by eye- this will need to be adjusted based on the data. I then fit the two, now separate peaks, with a Gaussian function.
+
+## Step 1: Split the curves apart
+
+```{r}
+
+# Step 1: Separate curves #####
+## Based on eyeballing general curves
+
+### A: Seperate both curves =====
+
+
+left_bound <- 9.6
+right_bound <- 10.35
+
+left_bound2 <- 10.35
+right_bound2 <- 11
+
+## B: Initiate empty lists =====
+
+first_curve_list <-  list()
+second_curve_list <- list()
+
+## C: Loop along to split =====
+
+for (i in seq_along(adjusted_histogram_list)) {
+  # First curve
+  first_curve <- adjusted_histogram_list[[i]] %>%
+    filter(mid_log_adjusted > left_bound, mid_log_adjusted < right_bound)
+  # Second curve
+  second_curve <- adjusted_histogram_list[[i]] %>%
+    filter(mid_log_adjusted > left_bound2, mid_log_adjusted < right_bound2)
+  
+  # Extract the data
+  first_curve_list[[i]] <- first_curve
+  second_curve_list[[i]] <- second_curve
+
+  }
+
+
+```
+
+### Plot the curves to check!
+
+```{r}
+
+# First curve #####
+
+half_first_curve_plots <- list()
+
+for (i in seq_along(first_curve_list)) {
+  p <- ggplot(first_curve_list[[i]], aes(mid_log_adjusted, normalized_counts))+
+    geom_point()
+  half_first_curve_plots[[i]] <- p
+  
+}
+
+print(half_first_curve_plots)
+
+```
+
+```{r}
+
+# Second curve #####
+
+half_second_curve_plots <- list()
+
+for (i in seq_along(second_curve_list)) {
+  p <- ggplot(second_curve_list[[i]], aes(mid_log_adjusted, normalized_counts))+
+    geom_point()
+  half_second_curve_plots[[i]] <- p
+  
+}
+
+print(half_second_curve_plots)
+```
+
+## Step 2: Fit peaks
+
+For both curves, starting parameters need to be defined. Refer to the split curve plots above to estimate a (should be peak max), b (midpoint on the x (always 10 for the first curve), and c (spread).
+
+```{r}
+# Step 2: Fit the curves #####
+
+## A: Fit first curve ======
+
+first_fit <- list()
+
+for (i in seq_along(first_curve_list)) {
+  x_1 <- first_curve_list[[i]]$mid_log_adjusted
+  y_1 <- first_curve_list[[i]]$normalized_counts
+  curve <- first_curve_list[[i]]
+  
+  # Define control parameters for nls
+  control <- nls.control(minFactor = 1e-5)
+  
+  # Try different starting values if necessary
+  start_vals <- list(a = max(curve$normalized_counts), b = mean(x_1), c = sd(x_1))
+  
+  gaussian_model_first <- try(nls(
+    y_1 ~ a * exp(-(x_1 - b)^2 / (2 * c^2)),
+    start = start_vals,
+    control = control
+  ), silent = TRUE)
+  
+  if (inherits(gaussian_model_first, "try-error")) {
+    print(paste("Error fitting curve", i))
+    next
+  }
+  
+  fit_first_peak <- predict(gaussian_model_first)
+  
+  fit <- as.data.frame(fit_first_peak)
+  
+  fit2 <- bind_cols(curve, fit)
+  
+  first_fit[[i]] <- fit2
+}
+
+### Check! -----
+
+ggplot(first_fit[[30]], aes(mid_log_adjusted, normalized_counts))+
+  geom_point()+
+  geom_line(aes(y = fit_first_peak), linetype = "solid", col = "blue")
+
+
+## B: Fit second curve =====
+
+second_fit <- list()
+
+for (i in seq_along(second_curve_list)) {
+  x_1 <- second_curve_list[[i]]$mid_log_adjusted
+  y_1 <- second_curve_list[[i]]$normalized_counts
+  curve <- second_curve_list[[i]]
+  
+  gaussian_model_second <- nls(
+    y_1 ~ a * exp(-(x_1 - b)^2 / (2 * c^2)),
+    start = list(a = max(curve$normalized_counts), b = 10.62, c = sd(curve$normalized_counts))
+  )
+  
+  fit_second_peak <- predict(gaussian_model_second)
+  
+  # summary(gaussian_model_second)[1]
+  
+  fit <- as.data.frame(fit_second_peak)
+  
+  fit2 <- bind_cols(curve, fit)
+  
+  second_fit[[i]] <- fit2
+}
+
+### Check! -----
+
+ggplot(second_fit[[20]], aes(mid_log_adjusted, normalized_counts))+
+  geom_point()+
+  geom_line(aes(y = fit_second_peak), linetype = "solid", col = "blue")
+```
+
+### Plot all fits to check
+
+```{r}
+
+# First curve #####
+
+first_curve_plots <- list()
+
+for (i in seq_along(first_fit)) {
+  p <- ggplot(first_fit[[i]], aes(x = mid_log_adjusted, y = normalized_counts))+
+    geom_point()+
+    geom_line(aes(y = fit_first_peak), col = "blue")+
+    labs(x = desc_of_interest, y = "Counts",
+         title = first_fit[[i]]$file_name[1])+
+    theme_minimal()
+  
+  first_curve_plots[[i]] <- p
+}
+
+print(first_curve_plots)
+
+```
+
+Second curve plots
+
+```{r}
+
+# Second curve #####
+
+second_curve_plots <- list()
+
+for (i in seq_along(second_fit)) {
+  p <- ggplot(second_fit[[i]], aes(x = mid_log_adjusted, y = normalized_counts))+
+    geom_point()+
+    geom_line(aes(y = fit_second_peak), col = "blue")+
+    labs(x = desc_of_interest, y = "Counts",
+         title = second_fit[[i]]$file_name[1])+
+    theme_minimal()
+  
+  second_curve_plots[[i]] <- p
+}
+
+print(second_curve_plots)
+
+```
+
+### Step 3: Cut curves in half
+
+Here I cut the data in half based on the peak height of the fitted data. We chose to do this because of the potential overlap of the curves in the flow cytometry data. We cut them in half, then mirror the data to create peaks specific to cell cycle phase.
+
+```{r}
+
+# Step 3: Cut curves in half #####
+
+## A: First curve =====
+
+# first_peak_approx_x <- list()
+
+left_of_first <- list()
+
+for (i in seq_along(first_fit)) {
+  peak <- max(first_fit[[i]]$fit_first_peak)
+  approx_x <- approx(first_fit[[i]]$fit_first_peak, first_fit[[i]]$mid_log_adjusted, xout = peak)$y
+  
+  # first_peak_approx_x[[i]] <- approx_x
+  
+  left_of_first[[i]] <- first_fit[[i]] %>%
+    filter (mid_log_adjusted <= approx_x)
+
+}
+
+### Check! -----
+
+ggplot(left_of_first[[1]], aes(mid_log_adjusted, normalized_counts))+
+  geom_point()+
+  geom_line(aes(y = left_of_first[[1]]$fit_first_peak))
+
+## B: Second peak =====
+
+right_of_second <- list()
+
+for (i in seq_along(second_fit)) {
+  peak <- max(second_fit[[i]]$fit_second_peak)
+  approx_x <- approx(second_fit[[i]]$fit_second_peak, second_fit[[i]]$mid_log_adjusted, xout = peak)$y
+  
+  # first_peak_approx_x[[i]] <- approx_x
+  
+  right_of_second[[i]] <- second_fit[[i]] %>%
+    filter (mid_log_adjusted >= approx_x)
+  
+}
+
+### Check! -----
+
+ggplot(right_of_second[[1]], aes(mid_log_adjusted, normalized_counts))+
+  geom_point()+
+  geom_line(aes(y = right_of_second[[1]]$fit_second_peak))
+
+```
+
+#### Check
+
+Once again plotting all to check!
+
+```{r}
+
+# First curve #####
+
+half_first_plots <- list()
+
+for (i in seq_along(left_of_first)) {
+  p <- ggplot(left_of_first[[i]], aes(x = mid_log_adjusted, y = normalized_counts))+
+    geom_point()+
+    geom_line(aes(y = fit_first_peak), col = "blue")+
+    labs(x = desc_of_interest, y = "Counts",
+         title = left_of_first[[i]]$file_name[1])+
+    theme_minimal()
+  
+  half_first_plots[[i]] <- p
+}
+
+print(half_first_plots)
+```
+
+```{r}
+
+# Second curve #####
+
+half_second_plots <- list()
+
+for (i in seq_along(right_of_second)) {
+  p <- ggplot(right_of_second[[i]], aes(x = mid_log_adjusted, y = normalized_counts))+
+    geom_point()+
+    geom_line(aes(y = fit_second_peak), col = "blue")+
+    labs(x = desc_of_interest, y = "Counts",
+         title = right_of_second[[i]]$file_name[1])+
+    theme_minimal()
+  
+  half_second_plots[[i]] <- p
+}
+
+print(half_second_plots)
+```
+
+### Step 4: Mirror
+
+As mentioned above, here I mirror the cut data to create a peak exclusive to the cell cycle phase.
+
+```{r}
+# Step 4: Mirror fits #####
+
+## A: First curve =====
+
+first_mirror_list <- list()
+
+for (i in seq_along(left_of_first)) {
+  mirrored <- left_of_first[[i]]
+  mirrored$mid_log_adjusted <- max(left_of_first[[i]]$mid_log_adjusted) + (max(left_of_first[[i]]$mid_log_adjusted) - left_of_first[[i]]$mid_log_adjusted) # Adjust 'mid' for mirroring
+  
+  first_mirror_list[[i]] <- rbind(left_of_first[[i]], mirrored)
+}
+
+### Check! -----
+
+ggplot(first_mirror_list[[10]], aes(mid_log_adjusted, normalized_counts))+
+  geom_point()+
+  geom_line(aes(y = first_mirror_list[[10]]$fit_first_peak))
+
+## B: Second =====
+
+second_mirror_list <- list()
+
+for (i in seq_along(right_of_second)) {
+  mirror_center <- min(right_of_second[[i]]$mid_log_adjusted)
+  mirrored2 <- right_of_second[[i]]
+  mirrored2$mid_log_adjusted <- mirror_center - (right_of_second[[i]]$mid_log_adjusted - mirror_center)
+  
+  second_mirror_list[[i]] <- rbind(right_of_second[[i]], mirrored2)
+}
+
+### Check! -----
+
+ggplot(second_mirror_list[[20]], aes(mid_log_adjusted, normalized_counts))+
+  geom_point()+
+  geom_line(aes(y = second_mirror_list[[20]]$fit_second_peak))
+
+
+
+```
+
+#### Check
+
+Plot all!
+
+```{r}
+
+# First Curve #####
+
+fill_fitted_first_curve <- list()
+
+for (i in seq_along(first_mirror_list)) {
+  p <- ggplot(first_mirror_list[[i]], aes(x = mid_log_adjusted, y = normalized_counts))+
+    geom_point()+
+    geom_line(aes(y = fit_first_peak), col = "blue")+
+    labs(x = desc_of_interest, y = "Counts",
+         title = first_mirror_list[[i]]$file_name[1])+
+    theme_minimal()
+  
+  fill_fitted_first_curve[[i]] <- p
+}
+
+print(fill_fitted_first_curve)
+```
+
+```{r}
+
+# Second Curve #####
+
+fill_fitted_second_curve <- list()
+
+for (i in seq_along(second_mirror_list)) {
+  p <- ggplot(second_mirror_list[[i]], aes(x = mid_log_adjusted, y = normalized_counts))+
+    geom_point()+
+    geom_line(aes(y = fit_second_peak), col = "blue")+
+    labs(x = desc_of_interest, y = "Counts",
+         title = second_mirror_list[[i]]$file_name[1])+
+    theme_minimal()
+  
+  fill_fitted_second_curve[[i]] <- p
+}
+
+print(fill_fitted_second_curve)
+```
+
+### Step 5: Integrate area
+
+Now I integrate the area under the fitted peak.
+
+```{r}
+
+# Step 5: Integrate #####
+
+## A: First curve =====
+
+for (i in seq_along(first_mirror_list)) {
+  data <- first_mirror_list[[i]]
+  
+  order1 <- data[order(data$mid_log_adjusted), ]
+  
+  area_under_curve <- sum(diff(order1$mid_log_adjusted) * (head(order1$fit_first_peak, -1) + tail(order1$fit_first_peak, -1)) / 2)
+  
+  first_mirror_list[[i]]$area <- area_under_curve
+  
+}
+
+
+## B: Second curve =====
+
+for (i in seq_along(second_mirror_list)) {
+  data <- second_mirror_list[[i]]
+  
+  order1 <- data[order(data$mid_log_adjusted), ]
+  
+  area_under_curve <- sum(diff(order1$mid_log_adjusted) * (head(order1$fit_second_peak, -1) + tail(order1$fit_second_peak, -1)) / 2)
+  
+  second_mirror_list[[i]]$area <- area_under_curve
+  
+}
+
+
+
+```
+
+### Step 6: Extract Data
+
+Want to extract the data into vectors & bind into new dataframe.
+
+```{r}
+
+# Extract first peak areas #####
+
+first_peak_areas <- rep(0, length(first_mirror_list))
+
+for(i in 1:length(first_mirror_list)) {
+  first_peak_areas[[i]] <- first_mirror_list[[i]]$area[1]
+}
+
+# Extract second peak areas #####
+
+second_peak_areas <- rep(0, length(second_mirror_list))
+
+for(i in 1:length(second_mirror_list)) {
+  second_peak_areas[[i]] <- second_mirror_list[[i]]$area[1]
+}
+
+# Extract file names #####
+
+peak_names <- rep("a", length(first_mirror_list))
+
+for(i in 1:length(first_mirror_list)) {
+  peak_names[[i]] <- first_mirror_list[[i]]$file_name[1]
+}
+
+# Bind data #####
+
+final.file <- as.data.frame(bind_cols(peak_names, first_peak_areas, second_peak_areas))
+
+# View(final.file)
+
+# Update column names #####
+
+final.file$file_name <- final.file$...1
+final.file$first_peak_area <- final.file$...2
+final.file$second_peak_area <- final.file$...3
+```
+
+# Create Stacked Barplot
+
+The final step of this analysis is a stacked barplot. This experiment was done over a 12hr period. File names do not correspond with timing, so we load in a "Match.sheet.csv" with corresponding metadata and match it based on file_name to the extracted data.
+
+**This is where the code breaks down and needs to be organized.**
+
+## Step 1: Load match.sheet.csv
+
+The match sheet contained data regarding time of fixation and replicate.
+
+Technically I did export the data and copy and pasted the metadata in and reloaded. A matching code will be uploaded eventually.
+
+```{r}
+# Load match #####
+
+## Set wd =====
+
+# wd(filepath)
+
+match <- read.csv(file = "match.sheet.csv", header = T, sep = ",")
+
+## Organize
+
+# match$Time <- as.POSIXct(match$Time)
+
+
+```
+
+Side quest: Calc S Phase. S phase lives bewteen the peaks of G1 and G2/ Mitosis. We tried to caluclate it by integrating the area underneath the density curve and subtracting the integrated areas of the two fitted peaks.
+
+```{r}
+# Calculate S Phase
+
+# Denisty data =====
+
+density_area_list <- list()
+
+for (i in seq_along(density_list)) {
+  data <- density_list[[i]]
+  
+  order <- data[order(data$x), ]
+  
+  density_area <- sum(diff(order$x) *(head(order$y, -1) + tail(order$y, -1)) / 2)
+  
+  density_list[[i]]$area <- density_area
+}
+
+
+# Extract denisty areas #####
+
+density_areas <- rep(0, length(density_list))
+
+for (i in 1:length(density_list)) {
+  density_areas[[i]] <- density_list[[i]]$area[1]
+}
+# bind file =====
+
+final.file <- as.data.frame(bind_cols(peak_names, first_peak_areas, second_peak_areas, density_areas))
+
+# View(final.file)
+
+final.file$file_name <- final.file$...1
+final.file$first_peak_area <- final.file$...2
+final.file$second_peak_area <- final.file$...3
+final.file$density_area <- final.file$...4
+
+
+
+final.file$S_phase <- final.file$density_area - final.file$first_peak_area - final.file$second_peak_area
+
+fin <- final.file
+
+write.csv(fin, "C:/Users/mlb72/OneDrive/Documents/RR/RR_168.csv")
+
+# Data #####
+
+RR_R816 <- read.csv(file = "RR_R816.csv", header = T, sep = ",")
+
+RR_816 <- read.csv(file = "RR_618_data.csv", header = T, sep = ",")
+
+RR_R168 <- read.csv(file = "RR_R168.csv", header = T, sep = ",")
+
+RR_cons <- read.csv(file = "RR_cons.csv", header = T, sep = ",")
+
+RR_168 <- read.csv(file = "RR_168.csv", header = T, sep = ",")
+
+```
+
+## Step 2: Average the data
+
+For our experiment structure, we decided to average the replicates.
+
+```{r}
+
+fin <- final.file %>%
+  group_by(Replicate) %>%
+  summarize(
+    across(where(is.numeric),   
+           list(mean = ~ mean(., na.rm = TRUE),
+                sd = ~ sd(., na.rm = TRUE)),
+           .names = "{.col}_{.fn}"),
+    across(where(is.character), first),
+    Time_mean = as.POSIXct(mean(as.numeric(Time), na.rm = TRUE), origin = "1970-01-01"),
+    Time_sd = sd(as.numeric(Time), na.rm = TRUE),
+    .groups = 'drop'
+  ) %>%
+  mutate(Time_sd = as.difftime(Time_sd, units = "secs"))
+
+```
+
+## Step 3: Change the dataframe structure
+
+```{r}
+# Step 2: adjust df
+
+adj_file <- fin %>%
+  select(file_name, first_peak_area, second_peak_area, S_phase) %>%
+  pivot_longer(cols = c(first_peak_area, second_peak_area, S_phase),
+               names_to = "area",
+               values_to = "value")
+
+
+```
+
+## Step 4: Plot the stacked barplot
+
+```{r}
+# Step 3: Plot!! 
+
+
+Final_Plot <- ggplot(adj_file, aes(x = Time.After.the.onset.of.light_mean, y = value, fill = area))+
+  geom_bar(position = "fill", stat = "identity")+
+  # scale_fill_manual(values = c("purple2", "green3", "pink"))+
+  theme_classic()+
+  theme(axis.text.x = element_text(angle = 0, vjust = 0.5, hjust = 0.5))+
+  theme(text = element_text(family = "serif"))+
+  labs(y = "Frequency",
+       x = "Hours After Light On",
+       fill = "Phase:")+
+  scale_x_continuous(breaks = c(-2, 0, 2, 4, 6, 8, 10))+
+  scale_fill_manual(values = c("darkolivegreen3", "darkseagreen", "forestgreen"),
+                    labels = c("G1_mean" = "G1", "G2.Mitosis_mean" = "G2/Mitosis", "S_mean" = "S"))+
+  theme(legend.position = "bottom")+
+  theme(
+    # axis.text.x=element_blank(), #remove x axis labels
+    #     axis.ticks.x=element_blank(),
+    #     axis.title.x = element_blank(),#remove x axis ticks
+        axis.title.x = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 14),
+        axis.text.y = element_text(size = 12))
+
+print(Final_Plot2)
+```
+
+### Final Export
+
+```{r}
+
+ggsave(Final_Plot, 
+       filename = "Reversed_816_RR.jpeg",
+       device = "jpeg",
+       height = 4, width = 8, units = "in")
+
+```
+
+```{r}
+
+write.csv(fin, "C:/Users/mlb72/OneDrive/Documents/RR/RR_618_data.csv")
+
+
+```
